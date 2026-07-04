@@ -4,6 +4,7 @@ import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Lock, Heart } from "lucide-react";
 import { RevealBurst } from "./reveal-burst";
+import { Starfield } from "./starfield";
 
 const PASSWORD = "17368";
 const SS_KEY = "lilac:authed";
@@ -76,6 +77,8 @@ export function PasswordGate({ children }: { children: React.ReactNode }) {
             className="fixed inset-0 z-[100] grid place-items-center p-4"
             style={dissolving ? { pointerEvents: "none" } : undefined}
           >
+            {/* subtle drifting starfield behind the lock card */}
+            <Starfield />
             {/* subtle darkening so the lock card stays readable */}
             <div
               className="absolute inset-0 bg-background/70 backdrop-blur-xl"

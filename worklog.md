@@ -241,3 +241,121 @@ Work Log:
 
 Stage Summary:
 - Shatter now: card captures → instantly hidden → 252 shards of the actual UI fly apart once → dissolve → chat reveals with no flash. No double explosion, no intact card underneath, no white flash. VLM-confirmed.
+
+---
+Task ID: 22
+Agent: orchestrator (main)
+Task: Add subtle starfield that drifts with cursor movement.
+
+Work Log:
+- Created starfield.tsx: canvas-based, 140 stars across 3 parallax layers (far/mid/near). Near layer = brighter + larger + drifts more; far layer = faint + small + barely moves. Each star twinkles (sine-based alpha). Palette: very-light-lilac / light-violet / white.
+  - Cursor parallax: target = normalized -1..1 from center; current eased toward target at 0.05/frame; each layer drifts opposite to cursor with amplitude [8,18,32]px. Stars near the cursor appear to shift less, far stars shift more → depth illusion.
+  - Optimized: dpr capped at 2, rAF loop, pauses on tab hidden, no per-frame allocations. Bright near-stars get a soft glow halo.
+- Wired into page.tsx (resolving screen + chat screen) and password-gate.tsx (behind the lock card, under the backdrop). All three screens now have the starfield.
+- Lint clean (0/0). Agent Browser + VLM verified: canvas 1280×577 2d-ok, "small subtle stars/dots, mix of lilac and white, calm night-sky atmosphere"; cursor movement shifts stars (parallax); chat reveals with starfield persistent; no console/runtime errors.
+
+Stage Summary:
+- Background now has a subtle drifting starfield (140 stars, 3 parallax layers, twinkle, lilac/white) that eases toward the cursor for a depth effect. Present on password gate, resolving screen, and chat. VLM-confirmed calm night-sky look.
+
+---
+Task ID: 23
+Agent: orchestrator (main)
+Task: Fix scroll lag through messages; make starfield actually visible (was too faint).
+
+Work Log:
+- Scroll lag root cause: every MessageBubble had framer-motion `layout` prop, which measures + animates each bubble's position on every render/scroll. With many messages this thrashes layout calc on scroll. Removed `layout` from the bubble's motion.div (enter animation via initial/animate still works). Verified: 30 scroll jumps across 10 messages = 0ms, instant.
+- Starfield visibility: stars were too faint (alpha 0.35-0.8 × twinkle 0.6-1.0, radius 0.4-1.8px) → barely noticeable on phone screens. Bumped: LAYER_ALPHA [0.35,0.55,0.8]→[0.5,0.75,1.0], min radius 0.4→0.7, twinkle min 0.6→0.7, count 140→160, and gave ALL stars a soft glow (not just layer 2). Kept it subtle via soft lilac/white colors + gentle parallax. VLM-verified chat screen: "dozens (50-100+) dots, clearly visible though subtle, not overly bright, starry night aesthetic."
+- Lint clean (0/0). No errors.
+
+Stage Summary:
+- Scrolling through messages is now smooth (removed layout prop). Starfield is now clearly visible on the chat screen — subtle but present, drifting with cursor. Both fixes verified.
+
+---
+Task ID: 24
+Agent: orchestrator (main)
+Task: Replace starfield dots with 💜 hearts (starfield of hearts); make more transparent; remove the separate moving hearts.
+
+Work Log:
+- Rewrote starfield.tsx to render 💜 hearts via canvas fillText instead of arc circles. 90 hearts across 3 parallax layers (far/mid/near). Far = small (5-9px) + very faint (alpha 0.18); near = larger (9-16px) + brighter (alpha 0.42). Twinkle (sine 0.65-1.0), cursor parallax drift (opposite direction, eased). All much more transparent than the old stars (was 0.5-1.0, now 0.18-0.42).
+- Removed FloatingHearts component + all usages from page.tsx (resolving screen + chat screen). Deleted the function definition. Now only the heartfield canvas renders background hearts.
+- Lint clean (0/0). VLM-verified: "purple heart emojis scattered like a starfield, subtle and transparent, not bright or distracting, calm gentle field of hearts." Cursor parallax works. No errors.
+
+Stage Summary:
+- Background is now a single subtle heartfield: ~90 transparent 💜 hearts in 3 parallax layers, twinkling and drifting with the cursor. The old separately-moving hearts are gone. VLM-confirmed calm + transparent.
+
+---
+Task ID: 25
+Agent: orchestrator (main)
+Task: Fix heartfield movement stutter; add jelly wiggle hover to message bubbles.
+
+Work Log:
+- Heartfield stutter root cause: fillText("💜",...) was called for all 90 hearts every frame — text shaping/layout is expensive on canvas, causing frame drops especially during cursor move. Fix: pre-render each distinct heart size ONCE to an offscreen canvas (makeHeartSprite, cached by rounded size), then blit via drawImage every frame (~10x faster, no per-frame text shaping). Also bumped easing factor 0.05→0.08 so cursor follow feels smoother/snappier. Verified: canvas clearRect avg 0ms per frame.
+- Jelly wiggle: converted the bubble content div to motion.div with whileHover keyframes: scale [1, 1.06, 0.97, 1.03, 1] + rotate [0, -1.2, 1, -0.6, 0] over 0.6s easeOut. transformOrigin set to bottom-right (sent) / bottom-left (received) so it wobbles from its tail like jelly. Emoji-only + sticker bubbles skip the effect (they're transparent). Verified: bubble transform goes from "none" → "matrix(1.02865, -0.010149, ...)" on hover = scaling + rotating mid-wobble.
+- Lint clean (0/0). No console/runtime errors.
+
+Stage Summary:
+- Heartfield now moves smoothly (drawImage sprites instead of fillText). Message bubbles do a smooth jelly wobble (scale + rotate keyframes) on hover, anchored from their tail. Both verified.
+
+---
+Task ID: 26
+Agent: orchestrator (main)
+Task: Make hearts 30% more transparent; add letter-pop animation when typing in the input bar.
+
+Work Log:
+- Hearts 30% more transparent: LAYER_ALPHA [0.18,0.28,0.42] → [0.126,0.196,0.294] (×0.7). VLM-verified: "very subtle/faint, barely noticeable but present", rated 2/10.
+- Letter pop animation: textarea wrapped in relative container with two overlays:
+  1. Hidden mirror span (text before last char, identical styling) to measure caret x position via offsetWidth.
+  2. Pop motion.span that renders the last typed char at the caret position, animating scale 2.2→1 + opacity 0→0.85 over 0.2s easeOut, transformOrigin left-center. onAnimationComplete clears state so repeats retrigger.
+  - Detection in handleChange: only triggers when text grew by exactly 1 char at the end (v.length === text.length+1 && v startsWith text), ignores spaces/paste/deletion/emoji-insert. Uses popIdRef counter as React key so the same char typed twice retriggers.
+- Verified: typing 'z' → caught mid-animation at transform matrix(2.2,0,0,2.2,0,0) opacity 0 (initial large state) animating to scale 1. Char appears large then shrinks to normal in 0.2s, positioned at caret.
+- Lint clean (0/0). No console/runtime errors.
+
+Stage Summary:
+- Hearts now 30% more transparent (very faint). Letters typed in the input bar pop in large (2.2×) then shrink to normal size over 0.2s, positioned at the caret. Both verified.
+
+---
+Task ID: 27
+Agent: orchestrator (main)
+Task: Fix letter pop so the actual typed char is what animates (was floating to the right of the real text).
+
+Work Log:
+- Root cause: overlay was positioned using mirror span measured in a useEffect (ran a frame late → popOffset=0 on first frame → char appeared at the start, to the left). Also the overlay didn't cover the real char so both showed.
+- Fix: replaced mirror-span measurement with synchronous canvas measureText. In handleChange, when a single char is typed, measure the width of the preceding text via an offscreen canvas context (measureCtxRef), store the offset directly in popChar state. This means the overlay is positioned correctly on its very first render frame — no lag.
+- Overlay now has background:var(--background) + 1px horizontal padding so it COVERS the real char underneath during the 0.2s pop. Opacity stays 1 throughout (you see the char the whole time). When it shrinks to scale 1 it sits flush on top of the real char, then onAnimationComplete clears it revealing the settled text. So the real typed letter IS the one that appears big and shrinks into place.
+- transformOrigin: left center so it grows from the caret.
+- Verified: typing 'ab' → pop 'b' overlay at 462.55px vs caret at 465.34px (diff 2.8px, match). VLM confirmed "letter 'h' appears larger, popping in" in the input bar.
+- Lint clean (0/0). No errors.
+
+Stage Summary:
+- Letter pop now works as intended: the actual typed letter appears large (2.2×) directly on top of where it settles, then shrinks to normal over 0.2s. No more floating-to-the-right; it looks like the real text is what's animating.
+
+---
+Task ID: 28
+Agent: orchestrator (main)
+Task: Fix letter pop falling behind when typing multiple characters.
+
+Work Log:
+- Root cause: single popChar state — each new typed char overwrote the previous pop, so only one overlay existed at a time. Fast typing meant previous chars' pops got cut short / never completed, looking like they "fell behind".
+- Fix: changed to a pops ARRAY. Each typed char appends a new {ch, id, offset} entry. All pops render concurrently via pops.map, each with its own onAnimationComplete that removes ONLY itself from the array (filter by id). So every typed char gets its own independent 0.2s pop that completes on its own schedule — rapid typing no longer cuts anyone short.
+- Also clear pops[] on submit so stale pops don't linger after send.
+- Verified: typed 'h' then 'hi' rapidly → both pops exist concurrently (count:2, chars:["h","i"]). Typed 'abc' rapidly → multiple pops at correct positions (b at x=6, c at x=11 relative to textarea).
+- Lint clean (0/0). No errors.
+
+Stage Summary:
+- Letter pop now keeps up with fast typing: each character gets its own concurrent pop animation that completes independently, so none fall behind. Verified multiple simultaneous pops.
+
+---
+Task ID: 29
+Agent: orchestrator (main)
+Task: Fix letter pop still falling behind — switch to rendered text layer.
+
+Work Log:
+- Root cause of "still falling behind": the overlay approach used FIXED pixel offsets computed at type-time. As more chars were typed, the textarea text reflowed but the overlays stayed at their old fixed positions, so they appeared to lag/disconnect from the real text.
+- New approach: rendered text layer. The textarea text is made transparent (color:transparent, caretColor visible) so it still handles input + caret. A separate absolutely-positioned div renders the actual text as inline spans (one per char, whiteSpace:pre-wrap, same font/padding). Because the chars flow in normal inline flow, their positions are ALWAYS correct — no fixed offsets to fall behind on.
+- Each char has a stable id + a `fresh` flag. When a single char is appended at the end, only the new char gets fresh:true (initial scale 2.2 → animate scale 1 over 0.2s). Existing chars keep their id (no re-animate) and fresh:false (initial:false = no animation). On deletion/paste/mid-string edit, the array rebuilds with fresh:false (no pop).
+- textChars state maintained in handleChange: detects single-char-end-append vs rebuild. Cleared on submit.
+- Verified: typed 'hi' → both spans render, both popping concurrently. Typed 'hello' rapidly → rendered="hello", matchesTextarea:true, 5 spans. VLM confirmed 'a' appears larger/popping in.
+- Lint clean (0/0). No errors.
+
+Stage Summary:
+- Letter pop now uses a rendered text layer (transparent textarea + inline char spans). Positions are always correct because chars flow naturally — they can never fall behind no matter how fast you type. Each new char pops (2.2× → 1×) in place independently.

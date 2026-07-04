@@ -164,7 +164,6 @@ export function MessageBubble({
 
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: 14, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: "spring", stiffness: 380, damping: 26 }}
@@ -195,7 +194,7 @@ export function MessageBubble({
           mine ? "items-end" : "items-start"
         )}
       >
-        <div
+        <motion.div
           className={cn(
             "relative px-3.5 py-2.5 text-[15px] leading-relaxed",
             emojiOnly
@@ -206,6 +205,16 @@ export function MessageBubble({
               ? "bubble-sent rounded-3xl rounded-br-md"
               : "bubble-received rounded-3xl rounded-bl-md"
           )}
+          whileHover={
+            emojiOnly || isSticker
+              ? undefined
+              : {
+                  scale: [1, 1.06, 0.97, 1.03, 1],
+                  rotate: [0, -1.2, 1, -0.6, 0],
+                  transition: { duration: 0.6, ease: "easeOut" },
+                }
+          }
+          style={{ transformOrigin: mine ? "bottom right" : "bottom left" }}
         >
           {!emojiOnly && !isSticker && m.reply_to && (
             <ReplyQuote
@@ -235,7 +244,7 @@ export function MessageBubble({
           {m.pinned && (
             <span className="absolute -top-2 -right-1 text-sm">📌</span>
           )}
-        </div>
+        </motion.div>
 
         {/* meta row */}
         <div

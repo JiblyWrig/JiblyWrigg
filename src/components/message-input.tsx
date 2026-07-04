@@ -26,11 +26,13 @@ export function MessageInput({
   const [text, setText] = React.useState("");
   const [showEmoji, setShowEmoji] = React.useState(false);
   const [pendingFile, setPendingFile] = React.useState<File | null>(null);
+  const [textChars, setTextChars] = React.useState<{ ch: string; id: number; fresh: boolean }[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const textRef = React.useRef<HTMLTextAreaElement>(null);
   const emojiWrapRef = React.useRef<HTMLDivElement>(null);
   const typingTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = React.useRef(false);
+  const charIdRef = React.useRef(0);
 
   // Close emoji menu when clicking outside of it.
   React.useEffect(() => {
@@ -60,6 +62,28 @@ export function MessageInput({
   };
 
   const handleChange = (v: string) => {
+    // Maintain a per-character array for the rendered text layer.
+    // When a single char is appended at the end, mark it fresh (triggers pop).
+    // On deletion/paste/mid-string edits, rebuild from scratch (no pop).
+    setTextChars((prev) => {
+      if (
+        v.length === prev.length + 1 &&
+        v.slice(0, prev.length) ===
+          prev.map((c) => c.ch).join("")
+      ) {
+        const ch = v.slice(-1);
+        charIdRef.current += 1;
+        return [
+          ...prev.map((c) => ({ ...c, fresh: false })),
+          { ch, id: charIdRef.current, fresh: true },
+        ];
+      }
+      // otherwise rebuild (deletion, paste, etc.) — no pop
+      return v.split("").map((ch) => {
+        charIdRef.current += 1;
+        return { ch, id: charIdRef.current, fresh: false };
+      });
+    });
     setText(v);
     autoGrow();
     if (!isTypingRef.current) {
@@ -91,6 +115,7 @@ export function MessageInput({
     });
     setText("");
     setPendingFile(null);
+    setTextChars([]);
     autoGrow();
     flushTyping();
     setTimeout(() => textRef.current?.focus(), 0);
@@ -255,16 +280,42 @@ export function MessageInput({
             <Camera className="h-5 w-5" />
           </button>
 
-          <textarea
-            ref={textRef}
-            rows={1}
-            value={text}
-            disabled={disabled}
-            onChange={(e) => handleChange(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder=""
-            className="max-h-[140px] flex-1 resize-none bg-transparent px-2 py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground/60 disabled:opacity-50"
-          />
+          <div className="relative flex-1">
+            {/* The real textarea — transparent text (caret still visible),
+                handles all input. */}
+            <textarea
+              ref={textRef}
+              rows={1}
+              value={text}
+              disabled={disabled}
+              onChange={(e) => handleChange(e.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder=""
+              className="max-h-[140px] w-full resize-none bg-transparent px-2 py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-muted-foreground/60 disabled:opacity-50"
+              style={{ color: "transparent", caretColor: "var(--foreground)" }}
+            />
+            {/* Rendered text layer — each character is its own span flowing
+                inline, so positions are always correct. Newly-typed chars
+                pop (scale 2.2 → 1) in place; they never fall behind because
+                they live in normal flow, not at fixed offsets. */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 px-2 py-2.5 text-[15px] leading-relaxed text-foreground"
+              style={{ fontFamily: "inherit", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+            >
+              {textChars.map((c, i) => (
+                <motion.span
+                  key={c.id}
+                  initial={c.fresh ? { scale: 2.2 } : false}
+                  animate={{ scale: 1 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  style={{ display: "inline-block", transformOrigin: "left center" }}
+                >
+                  {c.ch}
+                </motion.span>
+              ))}
+            </div>
+          </div>
 
           <motion.button
             type="button"
