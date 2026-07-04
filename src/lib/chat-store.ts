@@ -361,6 +361,7 @@ class SupabaseBackend implements Backend {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private lastSeenCreatedAt = 0;
+  private presenceSubscribed = false;
 
   constructor(myId: UserId, cb: BackendCallbacks) {
     this.myId = myId;
@@ -451,8 +452,11 @@ class SupabaseBackend implements Backend {
         }
       )
       .subscribe(async (status) => {
+        this.presenceSubscribed = status === "SUBSCRIBED";
         if (status === "SUBSCRIBED") {
           await this.presenceChannel!.track({ id: this.myId });
+        } else if (status === "CHANNEL_ERROR" || status === "CLOSED") {
+          this.presenceChannel?.subscribe();
         }
       });
 
@@ -558,6 +562,7 @@ class SupabaseBackend implements Backend {
   }
 
   setTyping(typing: boolean) {
+    if (!this.presenceSubscribed) return;
     this.presenceChannel?.send({
       type: "broadcast",
       event: "typing",

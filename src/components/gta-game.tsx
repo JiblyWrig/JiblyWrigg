@@ -150,8 +150,13 @@ export function GtaGame({
       | { t: "hit"; id: string } // bullet id that hit me
       | { t: "dead"; id: string };
 
+    let subscribed = false;
+
     const send = (msg: NetMsg) => {
       if (channel) {
+        // Only broadcast once the realtime channel is actually subscribed —
+        // sending before that triggers REST-fallback deprecation warnings.
+        if (!subscribed) return;
         channel.send({ type: "broadcast", event: "gta", payload: msg });
       } else if (bc) {
         bc.postMessage(msg);
@@ -214,14 +219,23 @@ export function GtaGame({
       channel.on("broadcast", { event: "gta" }, (payload: { payload?: NetMsg }) => {
         if (payload.payload) onMsg(payload.payload);
       });
-      channel.subscribe();
+      channel.subscribe((status) => {
+        subscribed = status === "SUBSCRIBED";
+        if (subscribed) {
+          // announce once the channel is ready
+          send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
+        } else if (status === "CHANNEL_ERROR" || status === "CLOSED") {
+          channel?.subscribe();
+        }
+      });
     } else {
       bc = new BroadcastChannel("gta-game");
       bc.onmessage = (e) => onMsg(e.data as NetMsg);
+      subscribed = true; // BroadcastChannel needs no subscription
+      send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
     }
 
-    // announce position immediately + heartbeat
-    send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
+    // heartbeat so partner knows we're here even when idle
     const hb = setInterval(() => {
       send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
     }, 1500);
@@ -258,6 +272,7 @@ export function GtaGame({
     let running = true;
     let fireTimer = 0;
     let sendTimer = 0;
+    let lastSent = { x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false };
     const gameOverRef = { current: false };
     const goDead = () => {
       if (!gameOverRef.current) {
@@ -385,11 +400,21 @@ export function GtaGame({
         if (p.lastSeen < cutoff) players.delete(id);
       }
 
-      // --- network: send position ~12/s ---
+      // --- network: send position ~10/s, but only when something changed
+      // (moved, aimed, or shooting state toggled) to avoid spamming when idle.
       sendTimer -= dt;
       if (sendTimer <= 0) {
-        sendTimer = 0.08;
-        send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down });
+        sendTimer = 0.1;
+        const moved =
+          Math.abs(me.x - lastSent.x) > 0.5 ||
+          Math.abs(me.y - lastSent.y) > 0.5 ||
+          Math.abs(me.angle - lastSent.a) > 0.02 ||
+          me.hp !== lastSent.hp ||
+          mouse.down !== lastSent.s;
+        if (moved) {
+          lastSent = { x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down };
+          send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down });
+        }
       }
 
       // --- render ---

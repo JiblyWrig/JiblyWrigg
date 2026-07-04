@@ -228,3 +228,21 @@ Work Log:
 
 Stage Summary:
 - Layout fits screen again (no scale transform, full viewport height). Messaging: partner will receive messages without refreshing — realtime auto-reconnects on error, and a 5s poll catches any missed inserts. CRITICAL: push these 3 files (page.tsx, globals.css, chat-store.ts) to GitHub so the live site gets the fixes.
+
+---
+Task ID: 35
+Agent: orchestrator (main)
+Task: Fix 24 "Realtime send() falling back to REST API" deprecation warnings.
+
+Work Log:
+- Root cause: Supabase SDK logs a deprecation warning every time channel.send() is called before the realtime WebSocket is subscribed (it falls back to REST). The GTA game was broadcasting position ~12/s starting immediately on mount (before subscribe completed) → 24+ warnings. The chat typing broadcast could also trigger it.
+- Fix (gta-game.tsx):
+  1. Added `subscribed` flag, set true in channel.subscribe() status callback. send() now early-returns if not subscribed (Supabase path) — no more pre-subscribe REST fallbacks.
+  2. Channel subscribe callback also auto-reconnects on CHANNEL_ERROR/CLOSED.
+  3. Position broadcast now only sends when something changed (moved >0.5px, aimed >0.02rad, hp changed, or shooting toggled) — no spam when idle. Frequency 12/s → 10/s.
+  4. BroadcastChannel (preview) path sets subscribed=true immediately (no subscription needed).
+- Fix (chat-store.tsx): added presenceSubscribed flag; presence channel subscribe callback sets it + auto-reconnects on error; setTyping() early-returns if not subscribed.
+- Lint clean (0/0). Verified: game loads, no "falling back" warnings in console, no errors.
+
+Stage Summary:
+- The 24 deprecation warnings are gone: broadcasts only fire after the realtime channel is subscribed, and the game only sends when the player actually moves/aims/shoots (not every frame when idle). Auto-reconnect on channel error added too.
