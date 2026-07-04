@@ -312,3 +312,22 @@ Work Log:
 
 Stage Summary:
 - "join multiple times" error eliminated: channel reconnect now creates a fresh instance instead of re-subscribing the same one. DNS errors are transient network issues handled gracefully by the polling fallback. Push chat-store.ts + gta-game.tsx.
+
+---
+Task ID: 40
+Agent: orchestrator (main)
+Task: GTA can't see each other — rewrote networking to use Presence instead of broadcast.
+
+Work Log:
+- Root cause: broadcast messages are fire-and-forget. If the receiver's channel isn't subscribed at the exact moment the sender broadcasts, the message is LOST (no queue, no retry). For "see each other" this meant players often never appeared.
+- Fix: rewrote GTA networking to use Supabase Presence for player state (position, angle, hp, shooting). Presence auto-syncs state to all clients and recovers from disconnects automatically — far more reliable for "who's here and where are they". Broadcast is now only used for instantaneous events (bullet spawns, death notifications) where it's OK to lose a message.
+  - channel.track({id, x, y, a, hp, s}) updates our presence state
+  - presence "sync" event → syncFromPresence() rebuilds the players Map from presenceState(), adding/removing players as they join/leave
+  - trackMe() called on subscribe, on shoot, on move (in-loop), and every 1s heartbeat
+  - sendEvt() for bullets/deaths only
+  - Local preview (BroadcastChannel) path unchanged — still sends position msgs directly
+- Verified: two tabs both in game → VLM confirmed "two player characters visible: You (violet) and Love (pink)". No errors.
+- Lint clean (0/0).
+
+Stage Summary:
+- GTA multiplayer now uses Presence (auto-syncing, self-healing) instead of fire-and-forget broadcast for player state. Players will reliably see each other. Push gta-game.tsx + redeploy.

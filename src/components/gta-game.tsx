@@ -123,7 +123,10 @@ export function GtaGame({
     if (!ctx) return;
 
     // ---- networking ----
-    // Supabase broadcast channel if configured; else BroadcastChannel (preview).
+    // Uses Supabase Presence for player state (auto-syncs, recovers from
+    // disconnects — far more reliable than broadcast for "see each other").
+    // Broadcast is only used for instantaneous events (bullets, deaths).
+    // Falls back to BroadcastChannel in local preview mode.
     const sb = getSupabase();
     let channel: ReturnType<NonNullable<typeof sb>["channel"]> | null = null;
     let bc: BroadcastChannel | null = null;
@@ -146,55 +149,77 @@ export function GtaGame({
     const hitMarkers: HitMarker[] = [];
     const myBullets: Bullet[] = [];
 
-    type NetMsg =
-      | { t: "p"; id: string; x: number; y: number; a: number; hp: number; s: boolean }
+    type EvtMsg =
       | { t: "b"; id: string; o: string; x: number; y: number; vx: number; vy: number }
-      | { t: "hit"; id: string } // bullet id that hit me
       | { t: "dead"; id: string };
 
     let subscribed = false;
 
-    const send = (msg: NetMsg) => {
-      if (channel) {
-        // Only broadcast once the realtime channel is actually subscribed —
-        // sending before that triggers REST-fallback deprecation warnings.
-        if (!subscribed) return;
+    /** Update our presence state so the partner sees our latest position. */
+    const trackMe = () => {
+      if (channel && subscribed) {
+        channel.track({
+          id: myId,
+          x: me.x,
+          y: me.y,
+          a: me.angle,
+          hp: me.hp,
+          s: mouse.down,
+        });
+      }
+    };
+
+    /** Send an instantaneous event (bullet spawn, death). */
+    const sendEvt = (msg: EvtMsg) => {
+      if (channel && subscribed) {
         channel.send({ type: "broadcast", event: "gta", payload: msg });
       } else if (bc) {
         bc.postMessage(msg);
       }
     };
 
-    const onMsg = (msg: NetMsg) => {
-      if (!msg || msg.id === myId && msg.t !== "hit" && msg.t !== "dead") {
-        // ignore our own echoes except hit/dead targeted at us
-      }
-      if (msg.t === "p") {
-        if (msg.id === myId) return;
-        const p = players.get(msg.id);
-        if (p) {
-          p.x = msg.x;
-          p.y = msg.y;
-          p.angle = msg.a;
-          p.hp = msg.hp;
-          p.shooting = msg.s;
-          p.lastSeen = Date.now();
+    /** Sync the remote-players map from presence state. */
+    const syncFromPresence = () => {
+      if (!channel) return;
+      const state = channel.presenceState();
+      const seenIds = new Set<string>();
+      for (const [key, metas] of Object.entries(state)) {
+        if (key === myId) continue;
+        const meta = (metas as Array<Record<string, unknown>>)[0];
+        if (!meta) continue;
+        seenIds.add(key);
+        const s = SPAWNS[key as UserId];
+        const existing = players.get(key);
+        if (existing) {
+          existing.x = Number(meta.x) || existing.x;
+          existing.y = Number(meta.y) || existing.y;
+          existing.angle = Number(meta.a) || existing.angle;
+          existing.hp = Number(meta.hp) ?? existing.hp;
+          existing.shooting = Boolean(meta.s);
+          existing.lastSeen = Date.now();
         } else {
-          const s = SPAWNS[msg.id as UserId];
-          players.set(msg.id, {
-            id: msg.id,
-            x: msg.x,
-            y: msg.y,
-            angle: msg.a,
-            hp: msg.hp,
+          players.set(key, {
+            id: key,
+            x: Number(meta.x) || 0,
+            y: Number(meta.y) || 0,
+            angle: Number(meta.a) || 0,
+            hp: Number(meta.hp) ?? MAX_HP,
             color: s?.color ?? "#f472b6",
             name: s?.name ?? "Player",
             lastSeen: Date.now(),
-            shooting: msg.s,
+            shooting: Boolean(meta.s),
           });
         }
-      } else if (msg.t === "b") {
-        // remote bullet
+      }
+      // remove players no longer in presence
+      for (const id of Array.from(players.keys())) {
+        if (!seenIds.has(id)) players.delete(id);
+      }
+    };
+
+    const onEvt = (msg: EvtMsg) => {
+      if (!msg) return;
+      if (msg.t === "b") {
         if (msg.o === myId) return;
         bullets.push({
           id: msg.id,
@@ -205,44 +230,69 @@ export function GtaGame({
           vy: msg.vy,
           life: BULLET_LIFE,
         });
-      } else if (msg.t === "hit") {
-        // someone tells us their bullet id hit them — but we handle hits
-        // on the receiver side. This is for the shooter's kill tracking.
       } else if (msg.t === "dead") {
         if (msg.id !== myId) {
-          // partner died — we got a kill
           setKills((k) => k + 1);
         }
       }
     };
 
     if (sb) {
-      channel = sb.channel("gta-game", { config: { broadcast: { self: false } } });
-      channel.on("broadcast", { event: "gta" }, (payload: { payload?: NetMsg }) => {
-        if (payload.payload) onMsg(payload.payload);
+      channel = sb.channel("gta-game", {
+        config: { presence: { key: myId } },
+      });
+      channel.on("broadcast", { event: "gta" }, (payload: { payload?: EvtMsg }) => {
+        if (payload.payload) onEvt(payload.payload);
+      });
+      channel.on("presence", { event: "sync" }, () => {
+        syncFromPresence();
       });
       channel.subscribe((status) => {
         subscribed = status === "SUBSCRIBED";
         if (subscribed) {
-          // announce once the channel is ready
-          send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
+          trackMe();
         } else if (status === "CHANNEL_ERROR" || status === "CLOSED") {
-          // Don't re-subscribe the same instance — it throws "join can only
-          // be called a single time". The heartbeat will keep us visible;
-          // partner position updates resume when the channel recovers.
           subscribed = false;
         }
       });
     } else {
+      // local preview: BroadcastChannel for everything
       bc = new BroadcastChannel("gta-game");
-      bc.onmessage = (e) => onMsg(e.data as NetMsg);
-      subscribed = true; // BroadcastChannel needs no subscription
-      send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
+      type LocalMsg =
+        | { t: "p"; id: string; x: number; y: number; a: number; hp: number; s: boolean }
+        | EvtMsg;
+      bc.onmessage = (e) => {
+        const msg = e.data as LocalMsg;
+        if (!msg) return;
+        if (msg.t === "p") {
+          if (msg.id === myId) return;
+          const p = players.get(msg.id);
+          const s = SPAWNS[msg.id as UserId];
+          if (p) {
+            p.x = msg.x; p.y = msg.y; p.angle = msg.a; p.hp = msg.hp;
+            p.shooting = msg.s; p.lastSeen = Date.now();
+          } else {
+            players.set(msg.id, {
+              id: msg.id, x: msg.x, y: msg.y, angle: msg.a, hp: msg.hp,
+              color: s?.color ?? "#f472b6", name: s?.name ?? "Player",
+              lastSeen: Date.now(), shooting: msg.s,
+            });
+          }
+        } else {
+          onEvt(msg);
+        }
+      };
+      subscribed = true;
     }
 
-    // heartbeat so partner knows we're here even when idle
+    // heartbeat: re-track presence every 1s so partner always sees us
     const hb = setInterval(() => {
-      send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
+      if (bc) {
+        // local preview: broadcast position
+        bc.postMessage({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down });
+      } else {
+        trackMe();
+      }
     }, 1000);
 
     // ---- input ----
@@ -346,8 +396,8 @@ export function GtaGame({
           life: BULLET_LIFE,
         };
         myBullets.push(b);
-        send({ t: "b", id: bid, o: myId, x: b.x, y: b.y, vx: b.vx, vy: b.vy });
-        send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: true });
+        sendEvt({ t: "b", id: bid, o: myId, x: b.x, y: b.y, vx: b.vx, vy: b.vy });
+        trackMe();
       }
 
       // --- update my bullets ---
@@ -366,7 +416,7 @@ export function GtaGame({
             hitMarkers.push({ x: b.x, y: b.y, life: 0.3 });
             // tell partner they got hit (they track their own hp; we track kill)
             if (p.hp <= 0) {
-              send({ t: "dead", id: p.id });
+              sendEvt({ t: "dead", id: p.id });
             }
             break;
           }
@@ -424,7 +474,11 @@ export function GtaGame({
           mouse.down !== lastSent.s;
         if (moved) {
           lastSent = { x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down };
-          send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down });
+          if (bc) {
+            bc.postMessage({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down });
+          } else {
+            trackMe();
+          }
         }
       }
 
