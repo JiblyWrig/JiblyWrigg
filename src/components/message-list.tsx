@@ -167,8 +167,9 @@ export function MessageList({
     const prev = messages[i - 1];
     const next = messages[i + 1];
     const mine = m.sender_id === myId;
+    const showAvatar = !mine && (!next || next.sender_id !== m.sender_id);
     const groupedTop = !!prev && prev.sender_id === m.sender_id && !showDay;
-    return { m, day, showDay, mine, groupedTop };
+    return { m, day, showDay, mine, showAvatar, groupedTop };
   });
 
   return (
@@ -201,7 +202,7 @@ export function MessageList({
         )}
 
         <AnimatePresence initial={false}>
-          {rows.map(({ m, day, showDay, mine, groupedTop }) => (
+          {rows.map(({ m, day, showDay, mine, showAvatar, groupedTop }) => (
             <React.Fragment key={m.id}>
               {showDay && (
                 <div className="sticky top-1 z-10 mx-auto my-2">
@@ -217,6 +218,7 @@ export function MessageList({
                 <MessageBubble
                   m={m}
                   mine={mine}
+                  showAvatar={showAvatar}
                   replyOriginal={
                     m.reply_to ? messagesById.get(m.reply_to) : undefined
                   }

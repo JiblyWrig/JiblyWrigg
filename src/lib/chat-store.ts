@@ -213,6 +213,8 @@ class LocalBackend implements Backend {
   async sendMessage(m: ChatMessage) {
     const msgs = lsReadMessages();
     msgs.push(m);
+    // Cap at 40 messages — drop oldest beyond 40.
+    while (msgs.length > 40) msgs.shift();
     lsWriteMessages(msgs);
     this.cb.onMessage(m);
     this.post({ type: "msg", message: m });
@@ -357,9 +359,6 @@ class SupabaseBackend implements Backend {
     NonNullable<ReturnType<typeof getSupabase>>["channel"]
   > | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private lastSeenCreatedAt = 0;
-  private realtimeHealthy = false;
 
   constructor(myId: UserId, cb: BackendCallbacks) {
     this.myId = myId;
@@ -376,13 +375,7 @@ class SupabaseBackend implements Backend {
       .select("*")
       .order("created_at", { ascending: true })
       .then(({ data }) => {
-        (data ?? []).forEach((row) => {
-          const m = this.fromRow(row);
-          if (m.created_at > this.lastSeenCreatedAt) {
-            this.lastSeenCreatedAt = m.created_at;
-          }
-          this.cb.onMessage(m);
-        });
+        (data ?? []).forEach((row) => this.cb.onMessage(this.fromRow(row)));
       });
 
     this.channel = this.sb
@@ -392,9 +385,6 @@ class SupabaseBackend implements Backend {
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
           const m = this.fromRow(payload.new as Record<string, unknown>);
-          if (m.created_at > this.lastSeenCreatedAt) {
-            this.lastSeenCreatedAt = m.created_at;
-          }
           this.cb.onMessage(m);
           if (m.sender_id !== this.myId) {
             const patch: Partial<ChatMessage> = {
@@ -423,16 +413,7 @@ class SupabaseBackend implements Backend {
           if (old && old.id) this.cb.onDelete(String(old.id));
         }
       )
-      .subscribe((status) => {
-        // Track subscription state so the poll fallback knows if realtime
-        // is healthy. If it errors/closes, the poll will catch missed msgs.
-        this.realtimeHealthy =
-          status === "SUBSCRIBED" || status === "TIMED_OUT";
-        if (status === "CHANNEL_ERROR" || status === "CLOSED") {
-          // try to recover immediately
-          this.channel?.subscribe();
-        }
-      });
+      .subscribe();
 
     this.presenceChannel = this.sb.channel("lilac-presence", {
       config: { presence: { key: this.myId } },
@@ -464,31 +445,6 @@ class SupabaseBackend implements Backend {
         await this.presenceChannel.track({ id: this.myId });
       }
     }, 25000);
-
-    // Polling fallback: every 5s, fetch any messages newer than the newest
-    // we've seen. This catches inserts that realtime missed (dropped channel,
-    // sleep/wake, flaky network) so the partner never has to refresh.
-    this.pollTimer = setInterval(() => this.pollNewMessages(), 5000);
-  }
-
-  private async pollNewMessages() {
-    try {
-      const { data } = await this.sb
-        .from("messages")
-        .select("*")
-        .gt("created_at", this.lastSeenCreatedAt)
-        .order("created_at", { ascending: true });
-      if (!data || data.length === 0) return;
-      for (const row of data) {
-        const m = this.fromRow(row);
-        if (m.created_at > this.lastSeenCreatedAt) {
-          this.lastSeenCreatedAt = m.created_at;
-        }
-        this.cb.onMessage(m);
-      }
-    } catch {
-      /* ignore poll errors — realtime + next poll will catch up */
-    }
   }
 
   private fromRow(row: Record<string, unknown>): ChatMessage {
@@ -522,6 +478,24 @@ class SupabaseBackend implements Backend {
       reply_to: m.reply_to ?? null,
     });
     this.cb.onMessage(m);
+    // Cap stored messages at 40 to save space — delete oldest beyond 40.
+    this.capMessages().catch(() => {});
+  }
+
+  /** Delete all but the newest 40 messages to keep storage small. */
+  private async capMessages() {
+    const { data } = await this.sb
+      .from("messages")
+      .select("id, created_at")
+      .order("created_at", { ascending: false })
+      .limit(41);
+    if (!data || data.length <= 40) return;
+    // data[40] is the 41st newest — delete it and everything older
+    const cutoff = Number(data[40].created_at);
+    await this.sb
+      .from("messages")
+      .delete()
+      .lt("created_at", cutoff);
   }
 
   async markRead(ids: string[]) {
@@ -611,7 +585,6 @@ class SupabaseBackend implements Backend {
 
   destroy() {
     if (this.heartbeat) clearInterval(this.heartbeat);
-    if (this.pollTimer) clearInterval(this.pollTimer);
     this.channel?.unsubscribe();
     this.presenceChannel?.unsubscribe();
   }
@@ -694,11 +667,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         } else {
           // Append in arrival order — do NOT sort by created_at.
           // Clocks differ between devices, so created_at can misorder.
-          // The initial history load is already DB-ordered ascending, and
-          // realtime INSERTs arrive in commit order, so appending is correct.
-          set((s) => ({
-            messages: [...s.messages, m],
-          }));
+          // Initial history load is DB-ordered ascending; realtime INSERTs
+          // arrive in commit order. Cap at 40 to match the storage cap.
+          set((s) => {
+            const next = [...s.messages, m];
+            while (next.length > 40) next.shift();
+            return { messages: next };
+          });
         }
       },
       onUpdate: (m) => {

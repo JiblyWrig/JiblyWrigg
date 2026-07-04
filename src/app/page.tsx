@@ -11,7 +11,6 @@ import { MessageList } from "@/components/message-list";
 import { MessageInput } from "@/components/message-input";
 import { SelfieCapture } from "@/components/selfie-capture";
 import { PasswordGate } from "@/components/password-gate";
-import { Starfield } from "@/components/starfield";
 
 export default function Home() {
   return (
@@ -107,8 +106,12 @@ function ChatApp() {
   if (resolving || !myId) {
     return (
       <div className="relative grid h-[100dvh] place-items-center bg-background">
-        <Starfield />
-        <div className="relative z-10 flex flex-col items-center gap-3">
+        <FloatingHearts />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="relative z-10 flex flex-col items-center gap-3"
+        >
           <motion.div
             animate={{ scale: [1, 1.15, 1] }}
             transition={{ duration: 1.4, repeat: Infinity }}
@@ -117,17 +120,21 @@ function ChatApp() {
             💜
           </motion.div>
           <p className="text-sm text-muted-foreground">Opening our space…</p>
-        </div>
+        </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background">
-      {/* subtle drifting heartfield */}
-      <Starfield />
+    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background theme-transition">
+      {/* floating decorative purple hearts */}
+      <FloatingHearts />
 
-      <div className="relative z-10 flex h-full min-h-0 flex-col">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="relative z-10 flex h-full flex-col"
+      >
         <ChatHeader
           partnerName={IDENTITIES[myId === "user1" ? "user2" : "user1"].name}
           onReset={handleReset}
@@ -144,13 +151,54 @@ function ChatApp() {
           onTyping={setTyping}
           onSelfie={() => setSelfieOpen(true)}
         />
-      </div>
+      </motion.div>
 
       <SelfieCapture
         open={selfieOpen}
         onClose={() => setSelfieOpen(false)}
         onCapture={handleSelfieCapture}
       />
+    </div>
+  );
+}
+
+function FloatingHearts() {
+  // All purple hearts. Slow + very transparent.
+  // base duration 11–14s, ×1.56 (slowed ~20% over the previous ×1.3).
+  // peak opacity 0.32 (extra-transparent).
+  const hearts = React.useMemo(
+    () =>
+      Array.from({ length: 7 }).map((_, i) => ({
+        left: `${(i * 13 + 8) % 95}%`,
+        delay: (i * 1.7) % 9,
+        duration: (11 + (i % 4) * 3) * 1.56,
+        size: 14 + (i % 3) * 6,
+      })),
+    []
+  );
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+      aria-hidden
+    >
+      {hearts.map((h, i) => (
+        <motion.span
+          key={i}
+          initial={{ y: "110vh", opacity: 0 }}
+          animate={{ y: "-15vh", opacity: [0, 0.32, 0.32, 0] }}
+          transition={{
+            duration: h.duration,
+            delay: h.delay,
+            repeat: Infinity,
+            ease: "linear",
+          }}
+          style={{ left: h.left, fontSize: h.size, position: "absolute" }}
+          className="select-none"
+        >
+          💜
+        </motion.span>
+      ))}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { FileText, Download, Play, Reply as ReplyIcon } from "lucide-react";
+import { FileText, Download, Play, Reply as ReplyIcon, Check, CheckCheck } from "lucide-react";
 import type { ChatMessage } from "@/lib/types";
 import { IDENTITIES } from "@/lib/types";
 import { isEmojiOnly } from "@/lib/emojis";
@@ -14,6 +14,13 @@ function formatTime(ts: number) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Read-receipt tick state: sent → delivered → read. */
+function tickState(m: ChatMessage): "sent" | "delivered" | "read" {
+  if (m.read_at) return "read";
+  if (m.delivered_at) return "delivered";
+  return "sent";
 }
 
 function FileBlock({ m, mine }: { m: ChatMessage; mine: boolean }) {
@@ -142,9 +149,26 @@ function ReplyQuote({
   );
 }
 
+/** Read-receipt ticks: single ✓ (sent), double ✓✓ (delivered), blue ✓✓ (read). */
+function ReadTicks({ state }: { state: "sent" | "delivered" | "read" }) {
+  if (state === "sent") {
+    return <Check className="h-3.5 w-3.5" strokeWidth={2.5} />;
+  }
+  return (
+    <CheckCheck
+      className={cn(
+        "h-3.5 w-3.5",
+        state === "read" ? "text-sky-400" : "text-muted-foreground"
+      )}
+      strokeWidth={2.5}
+    />
+  );
+}
+
 export function MessageBubble({
   m,
   mine,
+  showAvatar,
   replyOriginal,
   onReply,
   onPin,
@@ -153,6 +177,7 @@ export function MessageBubble({
 }: {
   m: ChatMessage;
   mine: boolean;
+  showAvatar: boolean;
   replyOriginal?: ChatMessage;
   onReply: () => void;
   onPin: () => void;
@@ -164,6 +189,7 @@ export function MessageBubble({
 
   return (
     <motion.div
+      layout
       initial={{ opacity: 0, y: 14, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: "spring", stiffness: 380, damping: 26 }}
@@ -172,6 +198,23 @@ export function MessageBubble({
         mine ? "justify-end" : "justify-start"
       )}
     >
+      {/* avatar (received only) */}
+      {!mine &&
+        (showAvatar ? (
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            className={cn(
+              "grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br text-base shadow-sm",
+              IDENTITIES[m.sender_id].color
+            )}
+          >
+            {IDENTITIES[m.sender_id].avatar}
+          </motion.div>
+        ) : (
+          <div className="w-8 shrink-0" />
+        ))}
+
       {/* actions menu (shows on hover / tap) */}
       <div
         className={cn(
@@ -194,7 +237,7 @@ export function MessageBubble({
           mine ? "items-end" : "items-start"
         )}
       >
-        <motion.div
+        <div
           className={cn(
             "relative px-3.5 py-2.5 text-[15px] leading-relaxed",
             emojiOnly
@@ -205,16 +248,6 @@ export function MessageBubble({
               ? "bubble-sent rounded-3xl rounded-br-md"
               : "bubble-received rounded-3xl rounded-bl-md"
           )}
-          whileHover={
-            emojiOnly || isSticker
-              ? undefined
-              : {
-                  scale: [1, 1.06, 0.97, 1.03, 1],
-                  rotate: [0, -1.2, 1, -0.6, 0],
-                  transition: { duration: 0.6, ease: "easeOut" },
-                }
-          }
-          style={{ transformOrigin: mine ? "bottom right" : "bottom left" }}
         >
           {!emojiOnly && !isSticker && m.reply_to && (
             <ReplyQuote
@@ -244,7 +277,7 @@ export function MessageBubble({
           {m.pinned && (
             <span className="absolute -top-2 -right-1 text-sm">📌</span>
           )}
-        </motion.div>
+        </div>
 
         {/* meta row */}
         <div
@@ -254,6 +287,7 @@ export function MessageBubble({
           )}
         >
           <span>{formatTime(m.created_at)}</span>
+          {mine && !emojiOnly && !isSticker && <ReadTicks state={tickState(m)} />}
         </div>
       </div>
     </motion.div>
