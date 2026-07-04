@@ -359,3 +359,19 @@ Work Log:
 
 Stage Summary:
 - Letter pop now uses a rendered text layer (transparent textarea + inline char spans). Positions are always correct because chars flow naturally — they can never fall behind no matter how fast you type. Each new char pops (2.2× → 1×) in place independently.
+
+---
+Task ID: 30
+Agent: orchestrator (main)
+Task: Fix message ordering (new msg appears above older one) + partner must refresh to see new messages.
+
+Work Log:
+- Bug 1 (ordering): onMessage sorted messages by created_at. created_at is set client-side (Date.now() on sender), so if the two devices' clocks differ, a later-sent message can have an earlier created_at and sort above an earlier message. Fix: removed the sort — now appends in arrival order. Initial history load is already DB-ordered ascending, and Supabase realtime INSERTs arrive in commit order, so appending keeps correct chronological order regardless of clock skew.
+- Bug 2 (partner must refresh): realtime channel can silently drop (sleep/wake, network blip, Supabase channel error) — partner stops receiving INSERTs until manual refresh. Fixes:
+  1. Added subscribe status callback: tracks realtimeHealthy; on CHANNEL_ERROR/CLOSED, immediately re-subscribes.
+  2. Added a 5s polling fallback (pollNewMessages): fetches all messages with created_at > lastSeenCreatedAt and feeds them through onMessage. lastSeenCreatedAt tracked in history load + INSERT handler + poll. This catches any inserts realtime missed, so the partner never has to refresh.
+  3. Cleaned up pollTimer in destroy().
+- Lint clean (0/0). Local backend test confirmed messages append in correct send order.
+
+Stage Summary:
+- Messages now always appear in correct chronological order (arrival order, not client-clock-sorted). Partner no longer needs to refresh — a 5s poll catches any missed realtime inserts, and the channel auto-reconnects on error.
