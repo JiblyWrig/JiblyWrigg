@@ -536,24 +536,10 @@ class SupabaseBackend implements Backend {
       reply_to: m.reply_to ?? null,
     });
     this.cb.onMessage(m);
-    // Cap stored messages at 40 to save space — delete oldest beyond 40.
-    this.capMessages().catch(() => {});
-  }
-
-  /** Delete all but the newest 40 messages to keep storage small. */
-  private async capMessages() {
-    const { data } = await this.sb
-      .from("messages")
-      .select("id, created_at")
-      .order("created_at", { ascending: false })
-      .limit(41);
-    if (!data || data.length <= 40) return;
-    // data[40] is the 41st newest — delete it and everything older
-    const cutoff = Number(data[40].created_at);
-    await this.sb
-      .from("messages")
-      .delete()
-      .lt("created_at", cutoff);
+    // Note: we do NOT cap messages here anymore. The previous cap-by-created_at
+    // logic deleted new messages when device clocks differed (a message from the
+    // slower-clock device sorted as "oldest" and got deleted). 40+ messages is
+    // negligible storage on Supabase free tier, so capping isn't worth the risk.
   }
 
   async markRead(ids: string[]) {

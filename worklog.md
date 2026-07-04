@@ -263,3 +263,17 @@ Work Log:
 
 Stage Summary:
 - Polling is now clock-skew-proof (fetches newest 50, dedupes by id, no timestamp filter) + 3s interval + immediate poll on focus/visibility. She should receive messages within 3s even if realtime is completely broken. CRITICAL: push chat-store.ts to GitHub + she must hard-refresh to load the new code.
+
+---
+Task ID: 37
+Agent: orchestrator (main)
+Task: She only sees older messages, not new ones — found and fixed the 40-cap bug.
+
+Work Log:
+- ROOT CAUSE FOUND: the capMessages() function in the Supabase backend was deleting new messages. It sorted by created_at (set client-side per device clock) and deleted everything older than the 41st newest. When the two devices' clocks differ, a message from the slower-clock device sorts as "oldest" and gets DELETED immediately after insert. So his new messages were being inserted then instantly deleted — she only saw the old messages that survived.
+- Fix: removed capMessages() entirely from sendMessage. 40+ messages is negligible storage on Supabase free tier (handles thousands easily), so capping isn't worth the data-loss risk. Left the in-memory 40-cap (line 724) and local-backend cap (line 217) since those are by array length / arrival order (clock-safe).
+- Verified locally: sent 2 messages → both persist (count: 2). No errors.
+- Lint clean (0/0).
+
+Stage Summary:
+- The 40-message cap was deleting new messages due to clock skew between devices. Removed the Supabase cap entirely. CRITICAL: push chat-store.ts to GitHub + redeploy (uncheck build cache). Her phone will then receive new messages.
