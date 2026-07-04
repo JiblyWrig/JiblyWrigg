@@ -246,3 +246,20 @@ Work Log:
 
 Stage Summary:
 - The 24 deprecation warnings are gone: broadcasts only fire after the realtime channel is subscribed, and the game only sends when the player actually moves/aims/shoots (not every frame when idle). Auto-reconnect on channel error added too.
+
+---
+Task ID: 36
+Agent: orchestrator (main)
+Task: She still can't see his messages — fix clock-skew poll + add focus poll.
+
+Work Log:
+- Root cause hypothesis: the 5s poll used gt("created_at", lastSeenCreatedAt). created_at is set client-side (sender's clock). If the two devices' clocks differ, the sender's new message created_at could be ≤ the receiver's lastSeenCreatedAt (set from her own history load), so the poll's gt filter SKIPPED the message entirely. Realtime might also be silently failing on mobile.
+- Fix (chat-store.tsx Supabase backend):
+  1. pollNewMessages rewritten: now fetches the newest 50 messages (order by created_at desc, limit 50) regardless of timestamp, reverses, and feeds ALL through onMessage (which dedupes by id). Clock-skew-proof — no timestamp comparison for the filter.
+  2. Poll interval 5s → 3s for snappier delivery.
+  3. Added visibilityHandler: polls immediately when the tab becomes visible or gains focus (she picks up her phone → instant catch-up). Cleaned up in destroy().
+  4. presenceSubscribed guard on typing broadcast (from prev task) + presence auto-reconnect.
+- Lint clean (0/0). Local preview verified: sent "test for her" on tab1 → partner tab2 received it (1 msg).
+
+Stage Summary:
+- Polling is now clock-skew-proof (fetches newest 50, dedupes by id, no timestamp filter) + 3s interval + immediate poll on focus/visibility. She should receive messages within 3s even if realtime is completely broken. CRITICAL: push chat-store.ts to GitHub + she must hard-refresh to load the new code.

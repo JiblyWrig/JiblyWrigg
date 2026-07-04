@@ -360,6 +360,7 @@ class SupabaseBackend implements Backend {
   > | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private visibilityHandler: (() => void) | null = null;
   private lastSeenCreatedAt = 0;
   private presenceSubscribed = false;
 
@@ -466,21 +467,33 @@ class SupabaseBackend implements Backend {
       }
     }, 25000);
 
-    // Polling fallback: every 5s, fetch any messages newer than the newest
-    // we've seen. Catches inserts realtime missed (dropped channel, sleep/
-    // wake, flaky network) so the partner never has to refresh.
-    this.pollTimer = setInterval(() => this.pollNewMessages(), 5000);
+    // Polling fallback: every 3s, fetch the newest 50 messages and feed any
+    // we haven't seen. Catches inserts realtime missed (dropped channel, sleep/
+    // wake, flaky network, clock skew) so the partner never has to refresh.
+    this.pollTimer = setInterval(() => this.pollNewMessages(), 3000);
+    // Also poll immediately when the tab regains focus / becomes visible
+    // (e.g. she picks up her phone).
+    this.visibilityHandler = () => {
+      if (document.visibilityState === "visible") this.pollNewMessages();
+    };
+    document.addEventListener("visibilitychange", this.visibilityHandler);
+    window.addEventListener("focus", this.visibilityHandler);
   }
 
   private async pollNewMessages() {
     try {
+      // Fetch the newest 50 messages (regardless of created_at, which can
+      // differ between device clocks) and feed any we haven't seen yet.
+      // This is clock-skew-proof — dedupe by message id, not timestamp.
       const { data } = await this.sb
         .from("messages")
         .select("*")
-        .gt("created_at", this.lastSeenCreatedAt)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: false })
+        .limit(50);
       if (!data || data.length === 0) return;
-      for (const row of data) {
+      // we get newest-first; reverse so oldest of the batch applies first
+      const rows = data.slice().reverse();
+      for (const row of rows) {
         const m = this.fromRow(row);
         if (m.created_at > this.lastSeenCreatedAt) {
           this.lastSeenCreatedAt = m.created_at;
@@ -632,6 +645,10 @@ class SupabaseBackend implements Backend {
   destroy() {
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.visibilityHandler) {
+      document.removeEventListener("visibilitychange", this.visibilityHandler);
+      window.removeEventListener("focus", this.visibilityHandler);
+    }
     this.channel?.unsubscribe();
     this.presenceChannel?.unsubscribe();
   }
