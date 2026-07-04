@@ -359,6 +359,8 @@ class SupabaseBackend implements Backend {
     NonNullable<ReturnType<typeof getSupabase>>["channel"]
   > | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private lastSeenCreatedAt = 0;
 
   constructor(myId: UserId, cb: BackendCallbacks) {
     this.myId = myId;
@@ -375,7 +377,13 @@ class SupabaseBackend implements Backend {
       .select("*")
       .order("created_at", { ascending: true })
       .then(({ data }) => {
-        (data ?? []).forEach((row) => this.cb.onMessage(this.fromRow(row)));
+        (data ?? []).forEach((row) => {
+          const m = this.fromRow(row);
+          if (m.created_at > this.lastSeenCreatedAt) {
+            this.lastSeenCreatedAt = m.created_at;
+          }
+          this.cb.onMessage(m);
+        });
       });
 
     this.channel = this.sb
@@ -385,6 +393,9 @@ class SupabaseBackend implements Backend {
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
           const m = this.fromRow(payload.new as Record<string, unknown>);
+          if (m.created_at > this.lastSeenCreatedAt) {
+            this.lastSeenCreatedAt = m.created_at;
+          }
           this.cb.onMessage(m);
           if (m.sender_id !== this.myId) {
             const patch: Partial<ChatMessage> = {
@@ -413,7 +424,12 @@ class SupabaseBackend implements Backend {
           if (old && old.id) this.cb.onDelete(String(old.id));
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        // Auto-recover if the realtime channel errors or drops.
+        if (status === "CHANNEL_ERROR" || status === "CLOSED") {
+          this.channel?.subscribe();
+        }
+      });
 
     this.presenceChannel = this.sb.channel("lilac-presence", {
       config: { presence: { key: this.myId } },
@@ -445,6 +461,31 @@ class SupabaseBackend implements Backend {
         await this.presenceChannel.track({ id: this.myId });
       }
     }, 25000);
+
+    // Polling fallback: every 5s, fetch any messages newer than the newest
+    // we've seen. Catches inserts realtime missed (dropped channel, sleep/
+    // wake, flaky network) so the partner never has to refresh.
+    this.pollTimer = setInterval(() => this.pollNewMessages(), 5000);
+  }
+
+  private async pollNewMessages() {
+    try {
+      const { data } = await this.sb
+        .from("messages")
+        .select("*")
+        .gt("created_at", this.lastSeenCreatedAt)
+        .order("created_at", { ascending: true });
+      if (!data || data.length === 0) return;
+      for (const row of data) {
+        const m = this.fromRow(row);
+        if (m.created_at > this.lastSeenCreatedAt) {
+          this.lastSeenCreatedAt = m.created_at;
+        }
+        this.cb.onMessage(m);
+      }
+    } catch {
+      /* ignore — realtime + next poll will catch up */
+    }
   }
 
   private fromRow(row: Record<string, unknown>): ChatMessage {
@@ -585,6 +626,7 @@ class SupabaseBackend implements Backend {
 
   destroy() {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.pollTimer) clearInterval(this.pollTimer);
     this.channel?.unsubscribe();
     this.presenceChannel?.unsubscribe();
   }

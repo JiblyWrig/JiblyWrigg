@@ -176,3 +176,55 @@ Work Log:
 
 Stage Summary:
 - Chat now caps at 40 messages (auto-deletes oldest in Supabase, localStorage, and in-memory). Blue read ticks work: single ✓ sent, double ✓✓ delivered, blue ✓✓ read (when partner's tab is open). Both verified.
+
+---
+Task ID: 32
+Agent: orchestrator (main)
+Task: Restore letter-pop typing animation (was lost — old message-input.tsx had been uploaded to GitHub overwriting the rendered text layer).
+
+Work Log:
+- Root cause: the message-input.tsx on GitHub/in the repo was an older version missing the textChars state + rendered text layer. The textarea was plain (no transparent text, no char spans), so the pop animation didn't exist.
+- Rewrote message-input.tsx fully to restore ALL features: textChars state (per-char id + fresh flag), rendered text layer (transparent textarea + inline char spans that pop scale 2.2→1 over 0.2s on fresh chars), emoji outside-click close, reply preview, file chip, all input controls.
+- handleChange detects single-char-end-append (marks fresh) vs rebuild (deletion/paste — no pop). onPickEmoji rebuilds without pop. submit clears textChars.
+- Verified: typed 'a' → caught at transform matrix(2.2,0,0,2.2,0,0) (large initial). VLM confirmed "letter 'b' appears larger, popping in". Typed 'hi' → 2 spans render correctly.
+- Lint clean (0/0). No errors.
+
+Stage Summary:
+- Letter-pop typing animation restored: each typed letter appears large (2.2×) then shrinks to normal over 0.2s, rendered as inline spans so it never falls behind. IMPORTANT: push THIS message-input.tsx to GitHub so the live site gets it back.
+
+---
+Task ID: 33
+Agent: orchestrator (main)
+Task: Add GTA-style 2-player top-down mini-game with gun button, shared world, real-time multiplayer, pauses chat while playing.
+
+Work Log:
+- Created gta-game.tsx: top-down canvas game. Fixed-seed world (2000×2000) with 22 buildings, road grid. WASD movement (axis-separated collision so you slide along walls), mouse aim, click to shoot (0.22s cooldown). Bullets travel, hit players (12 dmg), expire after 1.4s or on walls. HP bar, kill counter, WASTED game-over screen + respawn. Custom crosshair cursor.
+- Real-time multiplayer: Supabase Realtime broadcast channel "gta-game" (or BroadcastChannel in local preview → two tabs = two players). Player position + angle + hp + shooting state broadcast ~12/s. Bullets broadcast on fire. Remote players rendered with name + hp bar; stale players culled after 6s. Both spawn in the SAME world (fixed building seed) at opposite corners (user1 top-left violet, user2 bottom-right pink).
+- Optimized: fixed-timestep 60fps loop, camera follows local player, offscreen entities/buildings culled, no per-frame allocations, DPR capped at 2, pauses on tab hidden. requestAnimationFrame.
+- Gun button: fixed bottom-left, violet-pink gradient circle with a gun SVG icon. Bumps gameKey to remount fresh on each open.
+- Pauses chat: game overlay is z-200 fixed full-screen, canvas covers the chat textarea (verified coveredBy: CANVAS). Game captures all keyboard (WASD/arrows/space preventDefault) + mouse. Chat can't be interacted with while playing. Exit button (top-right X) returns to chat.
+- Lint clean (0/0). Agent Browser + VLM verified: game loads with top-down world, player, HUD (HEALTH/KILLS/WASD hint), crosshair, exit button. Movement works. Chat covered while playing, restored on exit. No errors.
+
+Stage Summary:
+- GTA mini-game live: gun button bottom-left → opens full-screen top-down shooter. You and your girlfriend spawn in the same world, see each other move + shoot in real time (Supabase broadcast). Chat fully paused while playing. Verified.
+
+---
+Task ID: 34
+Agent: orchestrator (main)
+Task: Fix broken layout (doesn't fit screen) + she can't see his messages (reverted old files on GitHub).
+
+Work Log:
+- Root cause of BOTH: old versions of page.tsx, globals.css, and chat-store.ts had been uploaded to GitHub (overwriting the fixes), then pulled back into the project. The layout fix (plain div, no theme-transition, min-h-0) and the messaging fix (polling fallback + channel auto-reconnect) were both gone.
+- Layout fix (re-applied):
+  1. globals.css: added html, body { height:100%; margin:0; padding:0 } — without this, body had 0 height and h-full didn't resolve, collapsing the layout.
+  2. page.tsx: removed theme-transition class (its transition rule fought framer-motion transforms causing scale/stutter). Replaced chat wrapper motion.div (leaked scale transform) with plain div + min-h-0. Fixed resolving screen (removed scale:0.8 initial).
+  - Verified: innerTransform:none, headerTop:0, innerH:577=winH, inputBottom:565.
+- Messaging fix (re-applied to chat-store.ts Supabase backend):
+  1. Channel .subscribe() now has a status callback that re-subscribes on CHANNEL_ERROR/CLOSED (auto-reconnect).
+  2. Added pollTimer (5s) + pollNewMessages(): fetches messages with created_at > lastSeenCreatedAt, feeds through onMessage. lastSeenCreatedAt tracked in history load + INSERT handler + poll. Catches any inserts realtime missed so partner never has to refresh.
+  3. destroy() clears pollTimer.
+  - Verified local preview: sent "test msg" on tab1 → partner tab2 received it (1 message). Supabase path gets the polling fallback.
+- Lint clean (0/0). No errors.
+
+Stage Summary:
+- Layout fits screen again (no scale transform, full viewport height). Messaging: partner will receive messages without refreshing — realtime auto-reconnects on error, and a 5s poll catches any missed inserts. CRITICAL: push these 3 files (page.tsx, globals.css, chat-store.ts) to GitHub so the live site gets the fixes.

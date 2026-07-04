@@ -11,6 +11,7 @@ import { MessageList } from "@/components/message-list";
 import { MessageInput } from "@/components/message-input";
 import { SelfieCapture } from "@/components/selfie-capture";
 import { PasswordGate } from "@/components/password-gate";
+import { GtaGame } from "@/components/gta-game";
 
 export default function Home() {
   return (
@@ -24,6 +25,8 @@ function ChatApp() {
   const [myId, setMyId] = React.useState<UserId | null>(null);
   const [resolving, setResolving] = React.useState(true);
   const [selfieOpen, setSelfieOpen] = React.useState(false);
+  const [gameOpen, setGameOpen] = React.useState(false);
+  const [gameKey, setGameKey] = React.useState(0);
 
   const {
     messages,
@@ -107,11 +110,7 @@ function ChatApp() {
     return (
       <div className="relative grid h-[100dvh] place-items-center bg-background">
         <FloatingHearts />
-        <motion.div
-          initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="relative z-10 flex flex-col items-center gap-3"
-        >
+        <div className="relative z-10 flex flex-col items-center gap-3">
           <motion.div
             animate={{ scale: [1, 1.15, 1] }}
             transition={{ duration: 1.4, repeat: Infinity }}
@@ -120,21 +119,17 @@ function ChatApp() {
             💜
           </motion.div>
           <p className="text-sm text-muted-foreground">Opening our space…</p>
-        </motion.div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background theme-transition">
+    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background">
       {/* floating decorative purple hearts */}
       <FloatingHearts />
 
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="relative z-10 flex h-full flex-col"
-      >
+      <div className="relative z-10 flex h-full min-h-0 flex-col">
         <ChatHeader
           partnerName={IDENTITIES[myId === "user1" ? "user2" : "user1"].name}
           onReset={handleReset}
@@ -151,13 +146,44 @@ function ChatApp() {
           onTyping={setTyping}
           onSelfie={() => setSelfieOpen(true)}
         />
-      </motion.div>
+      </div>
 
       <SelfieCapture
         open={selfieOpen}
         onClose={() => setSelfieOpen(false)}
         onCapture={handleSelfieCapture}
       />
+
+      {/* GTA game launch button — bottom-left corner */}
+      {!gameOpen && (
+        <motion.button
+          type="button"
+          initial={{ scale: 0, rotate: -30 }}
+          animate={{ scale: 1, rotate: 0 }}
+          whileHover={{ scale: 1.1, rotate: -8 }}
+          whileTap={{ scale: 0.9 }}
+          onClick={() => {
+            setGameKey((k) => k + 1);
+            setGameOpen(true);
+          }}
+          aria-label="Play GTA"
+          title="Play GTA"
+          className="fixed bottom-5 left-5 z-30 grid h-12 w-12 place-items-center rounded-full bg-gradient-to-br from-violet-500 to-pink-500 text-white shadow-lg shadow-fuchsia-500/30"
+        >
+          <svg viewBox="0 0 24 24" className="h-6 w-6 fill-current">
+            <path d="M7 5h3l1 2h2v3h-1l1 3h-2l-1-2H8l-1 2H5l1-3H5V7h2V5zm9 2h2v6h-2V7zM5 14h14v2H5v-2z"/>
+          </svg>
+        </motion.button>
+      )}
+
+      {/* GTA game overlay — covers everything, pausing all chat functionality */}
+      {gameOpen && myId && (
+        <GtaGame
+          key={gameKey}
+          myId={myId}
+          onClose={() => setGameOpen(false)}
+        />
+      )}
     </div>
   );
 }
