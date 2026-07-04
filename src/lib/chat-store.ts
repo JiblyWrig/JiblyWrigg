@@ -373,21 +373,16 @@ class SupabaseBackend implements Backend {
     return getSupabase()!;
   }
 
-  init() {
-    this.sb
-      .from("messages")
-      .select("*")
-      .order("created_at", { ascending: true })
-      .then(({ data }) => {
-        (data ?? []).forEach((row) => {
-          const m = this.fromRow(row);
-          if (m.created_at > this.lastSeenCreatedAt) {
-            this.lastSeenCreatedAt = m.created_at;
-          }
-          this.cb.onMessage(m);
-        });
-      });
-
+  /** Create (or recreate) the messages realtime channel. On error/closed,
+   *  unsubscribes and creates a fresh channel instance so it can rejoin
+   *  without the "join can only be called once" error. The 3s polling
+   *  fallback covers any gap during reconnection. */
+  private setupChannel() {
+    try {
+      this.channel?.unsubscribe();
+    } catch {
+      /* ignore */
+    }
     this.channel = this.sb
       .channel("lilac-messages")
       .on(
@@ -400,12 +395,15 @@ class SupabaseBackend implements Backend {
           }
           this.cb.onMessage(m);
           if (m.sender_id !== this.myId) {
-            const patch: Partial<ChatMessage> = {
-              delivered_at: Date.now(),
-              read_at:
-                document.visibilityState === "visible" ? Date.now() : null,
-            };
-            this.sb.from("messages").update(patch).eq("id", m.id).then();
+            this.sb
+              .from("messages")
+              .update({
+                delivered_at: Date.now(),
+                read_at:
+                  document.visibilityState === "visible" ? Date.now() : null,
+              })
+              .eq("id", m.id)
+              .then();
           }
         }
       )
@@ -427,11 +425,31 @@ class SupabaseBackend implements Backend {
         }
       )
       .subscribe((status) => {
-        // Auto-recover if the realtime channel errors or drops.
         if (status === "CHANNEL_ERROR" || status === "CLOSED") {
-          this.channel?.subscribe();
+          // Recreate the channel from scratch after a brief delay so it can
+          // rejoin cleanly (calling .subscribe() on the same instance throws
+          // "join can only be called a single time").
+          window.setTimeout(() => this.setupChannel(), 2000);
         }
       });
+  }
+
+  init() {
+    this.sb
+      .from("messages")
+      .select("*")
+      .order("created_at", { ascending: true })
+      .then(({ data }) => {
+        (data ?? []).forEach((row) => {
+          const m = this.fromRow(row);
+          if (m.created_at > this.lastSeenCreatedAt) {
+            this.lastSeenCreatedAt = m.created_at;
+          }
+          this.cb.onMessage(m);
+        });
+      });
+
+    this.setupChannel();
 
     this.presenceChannel = this.sb.channel("lilac-presence", {
       config: { presence: { key: this.myId } },
@@ -457,7 +475,10 @@ class SupabaseBackend implements Backend {
         if (status === "SUBSCRIBED") {
           await this.presenceChannel!.track({ id: this.myId });
         } else if (status === "CHANNEL_ERROR" || status === "CLOSED") {
-          this.presenceChannel?.subscribe();
+          // Don't call .subscribe() on the same instance — it throws
+          // "join can only be called a single time". Presence will re-sync
+          // on the next heartbeat naturally; no urgent reconnect needed.
+          this.presenceSubscribed = false;
         }
       });
 

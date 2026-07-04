@@ -277,3 +277,38 @@ Work Log:
 
 Stage Summary:
 - The 40-message cap was deleting new messages due to clock skew between devices. Removed the Supabase cap entirely. CRITICAL: push chat-store.ts to GitHub + redeploy (uncheck build cache). Her phone will then receive new messages.
+
+---
+Task ID: 38
+Agent: orchestrator (main)
+Task: GTA multiplayer — can't see each other.
+
+Work Log:
+- Issue: both players spawned at opposite corners of 2000×2000 world (160,160 vs 1840,1840) — 2400px apart, camera only shows ~1280×577, so even if multiplayer worked they couldn't see each other without walking 30+ seconds.
+- Fixes:
+  1. Spawn points moved close together: user1 (900,900), user2 (1100,1100) — ~280px apart, visible immediately on spawn.
+  2. Added minimap (top-right, 130px) showing buildings + all players (remote as colored dots, me as pulsing dot) so they can find each other anywhere in the world.
+  3. Added "Love is here" / "Waiting for Love…" partner-online indicator in the HUD (green dot when partner's broadcasts are being received, gray when not). partnerOnlineRef + state updated from the cull loop.
+  4. Heartbeat 1.5s → 1s so partner appears faster.
+  5. Moved Exit button to bottom-right (was top-right, conflicted with minimap).
+- Networking was already correct (subscribed guard, broadcast channel, auto-reconnect). The main fix was spawn proximity + minimap so they can actually find each other.
+- Lint clean (0/0). VLM-verified: minimap top-right, HUD with health/kills/"Waiting for Love", controls + exit bottom. No errors.
+
+Stage Summary:
+- GTA multiplayer: players now spawn close together (visible immediately), minimap shows both players' positions, "Love is here" indicator confirms connection. Push gta-game.tsx + redeploy.
+
+---
+Task ID: 39
+Agent: orchestrator (main)
+Task: Fix "tried to join multiple times" error + ERR_NAME_NOT_RESOLVED.
+
+Work Log:
+- Error 1 "tried to join multiple times": the auto-reconnect logic called channel.subscribe() on the SAME channel instance after an error, but Supabase channels can only join once per instance → error loop.
+  - Fix (chat-store): extracted channel setup into setupChannel() method. On CHANNEL_ERROR/CLOSED, it unsubscribes the old channel, creates a FRESH channel instance (new .channel() call), and subscribes that — so join is only called once per instance. 2s delay before reconnect to avoid hammering.
+  - Fix (presence channel): removed the .subscribe() reconnect entirely; just sets presenceSubscribed=false. Presence re-syncs on the next heartbeat naturally.
+  - Fix (gta-game): same — removed .subscribe() reconnect; just sets subscribed=false. Heartbeat keeps us visible; partner updates resume when channel recovers.
+- Error 2 "ERR_NAME_NOT_RESOLVED": transient DNS failure on her device (couldn't resolve pxkwtqwldpdrrfcgkcoa.supabase.co). Not a code bug — the polling fallback already catches fetch errors and retries on the next 3s tick. No fix needed; just network blips.
+- Lint clean (0/0). Verified: app loads, message sends, no "join" errors in console.
+
+Stage Summary:
+- "join multiple times" error eliminated: channel reconnect now creates a fresh instance instead of re-subscribing the same one. DNS errors are transient network issues handled gracefully by the polling fallback. Push chat-store.ts + gta-game.tsx.

@@ -81,10 +81,10 @@ const BUILDINGS = (() => {
   return arr;
 })();
 
-// Spawn points for the two players
+// Spawn points for the two players — close together so they can see each other
 const SPAWNS: Record<string, { x: number; y: number; color: string; name: string }> = {
-  user1: { x: 160, y: 160, color: "#a78bfa", name: "You" },
-  user2: { x: WORLD_W - 160, y: WORLD_H - 160, color: "#f472b6", name: "Love" },
+  user1: { x: 900, y: 900, color: "#a78bfa", name: "You" },
+  user2: { x: 1100, y: 1100, color: "#f472b6", name: "Love" },
 };
 
 function rectCollide(x: number, y: number, r: number, rect: { x: number; y: number; w: number; h: number }) {
@@ -113,6 +113,8 @@ export function GtaGame({
   const [hp, setHp] = React.useState(MAX_HP);
   const [kills, setKills] = React.useState(0);
   const [gameOver, setGameOver] = React.useState(false);
+  const [partnerOnline, setPartnerOnline] = React.useState(false);
+  const partnerOnlineRef = React.useRef(false);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
@@ -225,7 +227,10 @@ export function GtaGame({
           // announce once the channel is ready
           send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
         } else if (status === "CHANNEL_ERROR" || status === "CLOSED") {
-          channel?.subscribe();
+          // Don't re-subscribe the same instance — it throws "join can only
+          // be called a single time". The heartbeat will keep us visible;
+          // partner position updates resume when the channel recovers.
+          subscribed = false;
         }
       });
     } else {
@@ -238,7 +243,7 @@ export function GtaGame({
     // heartbeat so partner knows we're here even when idle
     const hb = setInterval(() => {
       send({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: false });
-    }, 1500);
+    }, 1000);
 
     // ---- input ----
     const keys: Record<string, boolean> = {};
@@ -399,6 +404,12 @@ export function GtaGame({
       for (const [id, p] of players) {
         if (p.lastSeen < cutoff) players.delete(id);
       }
+      // update partner-online indicator
+      const online = players.size > 0;
+      if (online !== partnerOnlineRef.current) {
+        partnerOnlineRef.current = online;
+        setPartnerOnline(online);
+      }
 
       // --- network: send position ~10/s, but only when something changed
       // (moved, aimed, or shooting state toggled) to avoid spamming when idle.
@@ -500,6 +511,35 @@ export function GtaGame({
       ctx.lineTo(mouse.x, mouse.y + 16);
       ctx.stroke();
 
+      // --- minimap (top-right) so players can find each other ---
+      const mmSize = 130;
+      const mmX = cw - mmSize - 16;
+      const mmY = 16;
+      const mmScale = mmSize / WORLD_W;
+      ctx.fillStyle = "rgba(15, 12, 25, 0.8)";
+      ctx.fillRect(mmX, mmY, mmSize, mmSize);
+      ctx.strokeStyle = "rgba(167, 139, 250, 0.5)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(mmX, mmY, mmSize, mmSize);
+      // buildings on minimap
+      ctx.fillStyle = "rgba(58, 51, 88, 0.7)";
+      for (const b of BUILDINGS) {
+        ctx.fillRect(mmX + b.x * mmScale, mmY + b.y * mmScale, Math.max(1, b.w * mmScale), Math.max(1, b.h * mmScale));
+      }
+      // remote players on minimap
+      for (const [, p] of players) {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(mmX + p.x * mmScale, mmY + p.y * mmScale, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // me on minimap (pulsing)
+      const pulse = 3 + Math.sin(now / 200) * 1.5;
+      ctx.fillStyle = me.color;
+      ctx.beginPath();
+      ctx.arc(mmX + me.x * mmScale, mmY + me.y * mmScale, Math.max(1.5, pulse), 0, Math.PI * 2);
+      ctx.fill();
+
       raf = requestAnimationFrame(loop);
     };
 
@@ -569,6 +609,16 @@ export function GtaGame({
           <span className="text-[11px] font-medium text-white/60">KILLS </span>
           <span className="text-sm font-bold text-amber-300">{kills}</span>
         </div>
+        <div className="flex items-center gap-1.5 rounded-xl bg-black/60 px-3 py-1.5 backdrop-blur">
+          <span
+            className={`h-2 w-2 rounded-full ${
+              partnerOnline ? "bg-emerald-400" : "bg-white/30"
+            }`}
+          />
+          <span className="text-[11px] font-medium text-white/70">
+            {partnerOnline ? "Love is here" : "Waiting for Love…"}
+          </span>
+        </div>
       </div>
 
       {/* controls hint */}
@@ -582,7 +632,7 @@ export function GtaGame({
       <button
         type="button"
         onClick={onClose}
-        className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-black/60 text-white backdrop-blur transition hover:bg-black/80"
+        className="absolute right-4 bottom-4 grid h-10 w-10 place-items-center rounded-full bg-black/60 text-white backdrop-blur transition hover:bg-black/80"
         aria-label="Exit game"
       >
         <X className="h-5 w-5" />
