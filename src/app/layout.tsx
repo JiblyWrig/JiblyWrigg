@@ -3,13 +3,6 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
-import { ensureRealtimeServer } from "@/lib/gta-realtime-server";
-
-// Start the in-process GTA realtime relay (port 3003) when this server
-// component module first evaluates. Idempotent — safe under HMR/re-eval.
-// This lets the *already-running* dev server pick up the relay via HMR
-// without a full restart.
-ensureRealtimeServer();
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
