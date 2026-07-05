@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { X, Crosshair } from "lucide-react";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { X } from "lucide-react";
+import { io, type Socket } from "socket.io-client";
 import type { UserId } from "@/lib/types";
 
 /**
@@ -10,9 +10,10 @@ import type { UserId } from "@/lib/types";
  *
  * - Top-down canvas world: streets, buildings, both players as little cars/
  *   characters. WASD to move, mouse to aim, click to shoot.
- * - Real-time multiplayer: player positions + bullets broadcast over a shared
- *   Supabase Realtime channel (or BroadcastChannel in local preview mode, so
- *   two browser tabs = two players in the same world).
+ * - Real-time multiplayer: player positions + bullets relayed over a self-hosted
+ *   socket.io server (mini-services/gta-realtime, port 3004), reachable from the
+ *   browser through the gateway as io("/?XTransformPort=3004"). Works across
+ *   different devices/browsers — both players share the SAME world.
  * - Optimized: fixed-timestep update (60fps), camera follows local player,
  *   offscreen entities culled, no per-frame allocations. requestAnimationFrame
  *   loop pauses on tab hidden.
@@ -123,14 +124,11 @@ export function GtaGame({
     if (!ctx) return;
 
     // ---- networking ----
-    // Uses Supabase Presence for player state (auto-syncs, recovers from
-    // disconnects — far more reliable than broadcast for "see each other").
-    // Broadcast is only used for instantaneous events (bullets, deaths).
-    // Falls back to BroadcastChannel in local preview mode.
-    const sb = getSupabase();
-    let channel: ReturnType<NonNullable<typeof sb>["channel"]> | null = null;
-    let bc: BroadcastChannel | null = null;
-
+    // Real-time multiplayer over a self-hosted socket.io relay
+    // (mini-services/gta-realtime, port 3004). The browser reaches it through
+    // the gateway as io("/?XTransformPort=3004"). Unlike BroadcastChannel —
+    // which is scoped to a single browser — socket.io crosses devices and
+    // browsers, so both players actually end up in the SAME world.
     const spawn = SPAWNS[myId];
     const me: Player = {
       id: myId,
@@ -142,6 +140,12 @@ export function GtaGame({
       name: spawn.name,
       lastSeen: Date.now(),
     };
+    // The relay assigns each connecting client a seat ("user1"|"user2") so two
+    // different devices always get distinct in-game identities — even when the
+    // chat app's local-only identity resolution can't coordinate across devices
+    // (i.e. when Supabase isn't configured). Until the seat arrives we use the
+    // chat identity (myId) as a hint.
+    let mySeat: UserId = myId;
 
     // remote players (the partner)
     const players = new Map<string, Player>();
@@ -149,17 +153,121 @@ export function GtaGame({
     const hitMarkers: HitMarker[] = [];
     const myBullets: Bullet[] = [];
 
+    type StateSnap = {
+      id: string;
+      x: number;
+      y: number;
+      a: number;
+      hp: number;
+      s: boolean;
+    };
     type EvtMsg =
       | { t: "b"; id: string; o: string; x: number; y: number; vx: number; vy: number }
       | { t: "dead"; id: string };
 
-    let subscribed = false;
+    /** Upsert a remote player from a state snapshot. */
+    const upsertRemote = (snap: StateSnap) => {
+      if (!snap || snap.id === mySeat) return;
+      const s = SPAWNS[snap.id as UserId];
+      const existing = players.get(snap.id);
+      if (existing) {
+        existing.x = snap.x;
+        existing.y = snap.y;
+        existing.angle = snap.a;
+        existing.hp = snap.hp;
+        existing.shooting = snap.s;
+        existing.lastSeen = Date.now();
+      } else {
+        players.set(snap.id, {
+          id: snap.id,
+          x: snap.x,
+          y: snap.y,
+          angle: snap.a,
+          hp: snap.hp,
+          color: s?.color ?? "#f472b6",
+          name: s?.name ?? "Player",
+          lastSeen: Date.now(),
+          shooting: snap.s,
+        });
+      }
+    };
 
-    /** Update our presence state so the partner sees our latest position. */
-    const trackMe = () => {
-      if (channel && subscribed) {
-        channel.track({
-          id: myId,
+    const onEvt = (msg: EvtMsg) => {
+      if (!msg) return;
+      if (msg.t === "b") {
+        if (msg.o === mySeat) return;
+        bullets.push({
+          id: msg.id,
+          ownerId: msg.o,
+          x: msg.x,
+          y: msg.y,
+          vx: msg.vx,
+          vy: msg.vy,
+          life: BULLET_LIFE,
+        });
+      } else if (msg.t === "dead") {
+        if (msg.id !== mySeat) {
+          setKills((k) => k + 1);
+        }
+      }
+    };
+
+    const socket: Socket = io("/?XTransformPort=3004", {
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 3000,
+      timeout: 8000,
+    });
+
+    // Warm up the in-process relay (idempotent) so the socket.io server is
+    // definitely listening on port 3004 before we try to connect.
+    void fetch("/api/gta-realtime").catch(() => {});
+
+    socket.on("connect", () => {
+      socket.emit("join", { hint: mySeat });
+    });
+    socket.on("disconnect", () => {
+      /* will auto-reconnect; presence recovers via heartbeat */
+    });
+    // The relay assigns us a seat. Adopt it: respawn at the seat's spawn point,
+    // take its color/name, and use it as our broadcast id from now on.
+    socket.on("seat", (payload: { seat?: UserId }) => {
+      const seat = payload?.seat;
+      if (!seat || seat === mySeat) return;
+      mySeat = seat;
+      me.id = seat;
+      const sp = SPAWNS[seat];
+      me.x = sp.x;
+      me.y = sp.y;
+      me.color = sp.color;
+      me.name = sp.name;
+      me.hp = MAX_HP;
+      setHp(MAX_HP);
+      // Drop any remote ghost that was keyed by our old hint id.
+      players.delete(myId);
+    });
+    socket.on("state", (snap: StateSnap) => upsertRemote(snap));
+    socket.on("evt", (msg: EvtMsg) => onEvt(msg));
+    socket.on("presence", (payload: { users?: string[] }) => {
+      const users = new Set(payload?.users ?? []);
+      // Drop remotes that are no longer online.
+      for (const id of Array.from(players.keys())) {
+        if (!users.has(id)) players.delete(id);
+      }
+    });
+    socket.on("leave", (payload: { id?: string }) => {
+      if (payload?.id) players.delete(payload.id);
+    });
+    // If already connected (fast reconnect), announce ourselves right away.
+    if (socket.connected) socket.emit("join", { hint: mySeat });
+
+    /** Push our own state snapshot to the partner. */
+    const sendState = () => {
+      if (socket.connected) {
+        socket.emit("state", {
+          id: mySeat,
           x: me.x,
           y: me.y,
           a: me.angle,
@@ -171,128 +279,14 @@ export function GtaGame({
 
     /** Send an instantaneous event (bullet spawn, death). */
     const sendEvt = (msg: EvtMsg) => {
-      if (channel && subscribed) {
-        channel.send({ type: "broadcast", event: "gta", payload: msg });
-      } else if (bc) {
-        bc.postMessage(msg);
-      }
+      if (socket.connected) socket.emit("evt", msg);
     };
 
-    /** Sync the remote-players map from presence state. */
-    const syncFromPresence = () => {
-      if (!channel) return;
-      const state = channel.presenceState();
-      const seenIds = new Set<string>();
-      for (const [key, metas] of Object.entries(state)) {
-        if (key === myId) continue;
-        const meta = (metas as Array<Record<string, unknown>>)[0];
-        if (!meta) continue;
-        seenIds.add(key);
-        const s = SPAWNS[key as UserId];
-        const existing = players.get(key);
-        if (existing) {
-          existing.x = Number(meta.x) || existing.x;
-          existing.y = Number(meta.y) || existing.y;
-          existing.angle = Number(meta.a) || existing.angle;
-          existing.hp = Number(meta.hp) ?? existing.hp;
-          existing.shooting = Boolean(meta.s);
-          existing.lastSeen = Date.now();
-        } else {
-          players.set(key, {
-            id: key,
-            x: Number(meta.x) || 0,
-            y: Number(meta.y) || 0,
-            angle: Number(meta.a) || 0,
-            hp: Number(meta.hp) ?? MAX_HP,
-            color: s?.color ?? "#f472b6",
-            name: s?.name ?? "Player",
-            lastSeen: Date.now(),
-            shooting: Boolean(meta.s),
-          });
-        }
-      }
-      // remove players no longer in presence
-      for (const id of Array.from(players.keys())) {
-        if (!seenIds.has(id)) players.delete(id);
-      }
-    };
-
-    const onEvt = (msg: EvtMsg) => {
-      if (!msg) return;
-      if (msg.t === "b") {
-        if (msg.o === myId) return;
-        bullets.push({
-          id: msg.id,
-          ownerId: msg.o,
-          x: msg.x,
-          y: msg.y,
-          vx: msg.vx,
-          vy: msg.vy,
-          life: BULLET_LIFE,
-        });
-      } else if (msg.t === "dead") {
-        if (msg.id !== myId) {
-          setKills((k) => k + 1);
-        }
-      }
-    };
-
-    if (sb) {
-      channel = sb.channel("gta-game", {
-        config: { presence: { key: myId } },
-      });
-      channel.on("broadcast", { event: "gta" }, (payload: { payload?: EvtMsg }) => {
-        if (payload.payload) onEvt(payload.payload);
-      });
-      channel.on("presence", { event: "sync" }, () => {
-        syncFromPresence();
-      });
-      channel.subscribe((status) => {
-        subscribed = status === "SUBSCRIBED";
-        if (subscribed) {
-          trackMe();
-        } else if (status === "CHANNEL_ERROR" || status === "CLOSED") {
-          subscribed = false;
-        }
-      });
-    } else {
-      // local preview: BroadcastChannel for everything
-      bc = new BroadcastChannel("gta-game");
-      type LocalMsg =
-        | { t: "p"; id: string; x: number; y: number; a: number; hp: number; s: boolean }
-        | EvtMsg;
-      bc.onmessage = (e) => {
-        const msg = e.data as LocalMsg;
-        if (!msg) return;
-        if (msg.t === "p") {
-          if (msg.id === myId) return;
-          const p = players.get(msg.id);
-          const s = SPAWNS[msg.id as UserId];
-          if (p) {
-            p.x = msg.x; p.y = msg.y; p.angle = msg.a; p.hp = msg.hp;
-            p.shooting = msg.s; p.lastSeen = Date.now();
-          } else {
-            players.set(msg.id, {
-              id: msg.id, x: msg.x, y: msg.y, angle: msg.a, hp: msg.hp,
-              color: s?.color ?? "#f472b6", name: s?.name ?? "Player",
-              lastSeen: Date.now(), shooting: msg.s,
-            });
-          }
-        } else {
-          onEvt(msg);
-        }
-      };
-      subscribed = true;
-    }
-
-    // heartbeat: re-track presence every 1s so partner always sees us
+    // heartbeat: re-broadcast our state every 1s so the partner always has a
+    // fresh snapshot even when we're idle, and presence recovers automatically
+    // after a transient disconnect.
     const hb = setInterval(() => {
-      if (bc) {
-        // local preview: broadcast position
-        bc.postMessage({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down });
-      } else {
-        trackMe();
-      }
+      sendState();
     }, 1000);
 
     // ---- input ----
@@ -385,10 +379,10 @@ export function GtaGame({
       fireTimer -= dt;
       if (!gameOverRef.current && me.hp > 0 && mouse.down && fireTimer <= 0) {
         fireTimer = FIRE_COOLDOWN;
-        const bid = `${myId}-${now}-${Math.random().toString(36).slice(2, 6)}`;
+        const bid = `${mySeat}-${now}-${Math.random().toString(36).slice(2, 6)}`;
         const b: Bullet = {
           id: bid,
-          ownerId: myId,
+          ownerId: mySeat,
           x: me.x + Math.cos(me.angle) * (PLAYER_R + 2),
           y: me.y + Math.sin(me.angle) * (PLAYER_R + 2),
           vx: Math.cos(me.angle) * BULLET_SPEED,
@@ -396,8 +390,8 @@ export function GtaGame({
           life: BULLET_LIFE,
         };
         myBullets.push(b);
-        sendEvt({ t: "b", id: bid, o: myId, x: b.x, y: b.y, vx: b.vx, vy: b.vy });
-        trackMe();
+        sendEvt({ t: "b", id: bid, o: mySeat, x: b.x, y: b.y, vx: b.vx, vy: b.vy });
+        sendState();
       }
 
       // --- update my bullets ---
@@ -474,11 +468,7 @@ export function GtaGame({
           mouse.down !== lastSent.s;
         if (moved) {
           lastSent = { x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down };
-          if (bc) {
-            bc.postMessage({ t: "p", id: myId, x: me.x, y: me.y, a: me.angle, hp: me.hp, s: mouse.down });
-          } else {
-            trackMe();
-          }
+          sendState();
         }
       }
 
@@ -622,8 +612,7 @@ export function GtaGame({
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("resize", resize);
       document.removeEventListener("visibilitychange", onVis);
-      if (channel) channel.unsubscribe();
-      if (bc) bc.close();
+      socket.disconnect();
     };
   }, [myId]);
 
